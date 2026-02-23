@@ -1,0 +1,5 @@
+Shell version 1.5 created Dec 2025
+.
+..
+f
+Bye!

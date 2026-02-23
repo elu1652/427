@@ -1,0 +1,9 @@
+Shell version 1.5 created Dec 2025
+set x 10
+print x
+set x 20
+print x
+set y abc
+print y
+quit
+Bye!

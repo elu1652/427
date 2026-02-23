@@ -1,0 +1,7 @@
+set x 10
+print x
+set x 20
+print x
+set y abc
+print y
+quit

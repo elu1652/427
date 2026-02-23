@@ -1,0 +1,7 @@
+cool
+source notExistFile
+my_mkdir $noExistVar
+set dirname bad_name
+my_mkdir $dirname
+my_cd noExistDir
+quit
