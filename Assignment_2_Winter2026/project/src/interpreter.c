@@ -15,7 +15,7 @@
 
 // modify source() for A2 part1
 
-int MAX_ARGS_SIZE = 3;
+int MAX_ARGS_SIZE = 6; // for exec, max 3 scripts + policy + #
 
 int badcommand() {
     printf("Unknown Command\n");
@@ -112,7 +112,7 @@ int interpreter(char *command_args[], int args_size) {
         return run(command_args);
 
     } else if (strcmp(command_args[0], "exec") == 0) {
-        if (args_size < 3 || args_size > 5) 
+        if (args_size < 3 || args_size > 6) 
             return badcommand();
         return exec(command_args, args_size);
     } // added this for A2
@@ -373,21 +373,39 @@ int run(char **args){
 
 
 int exec(char *args[], int args_size) {
+    int background = 0;
     char *policy = args[args_size - 1];
-    int policy_ok =
-        (strcmp(policy, "FCFS") == 0) ||
-        (strcmp(policy, "SJF") == 0)  ||
-        (strcmp(policy, "RR") == 0)   ||
-        (strcmp(policy, "AGING") == 0);
-    if (!policy_ok) {
-        printf("bad command: exec\n");
-        return 1;
+    int n_scripts = 0;
+
+    if (args_size >= 2 && strcmp(args[args_size - 1], "#") == 0) { // Check if last argument is "#"
+        background = 1;
+        policy = args[args_size - 2];
+        n_scripts = args_size - 3;   // exec + scripts + policy + #
+    } else {
+        background = 0;
+        policy = args[args_size - 1];
+        n_scripts = args_size - 2;   // exec + scripts + policy
     }
-    int n_scripts = args_size - 2; // 1..3
+
+    // Validate scripts count
     if (n_scripts < 1 || n_scripts > 3) {
         printf("bad command: exec\n");
         return 1;
     }
+
+    // Determine if policy is valid
+    int policy_ok =
+        (strcmp(policy, "FCFS") == 0) ||
+        (strcmp(policy, "SJF") == 0)  ||
+        (strcmp(policy, "RR") == 0)   ||
+        (strcmp(policy, "AGING") == 0)||
+        (strcmp(policy, "RR30") == 0);
+    if (!policy_ok) {
+        printf("bad command: exec\n");
+        return 1;
+    }
+
+    // Check for duplicate script names
     for (int i = 1; i <= n_scripts; i++) {
         for (int j = i + 1; j <= n_scripts; j++) {
             if (strcmp(args[i], args[j]) == 0) {
@@ -396,13 +414,21 @@ int exec(char *args[], int args_size) {
             }
         }
     }
+
     PCB *pcbs[3] = {NULL, NULL, NULL};
     int starts[3] = {0, 0, 0};
     int lens[3]   = {0, 0, 0};
+
     for (int i = 0; i < n_scripts; i++) {
-        FILE *fp = fopen(args[i], "r");
+        FILE *fp = fopen(args[i+1], "r");
         if(!fp) {
-            printf("bad command: file not found\n");
+            printf("Bad command: File not found\n");
+            for (int k = 0; k < i; k++) {
+                if (pcbs[k]) {
+                    code_mem_free_range(starts[k], lens[k]);
+                    free(pcbs[k]);
+                }
+            }
             return 1;
         }
         int rc = code_mem_load_script(fp, &starts[i], &lens[i]);
@@ -429,16 +455,58 @@ int exec(char *args[], int args_size) {
             printf("Bad command: exec\n");
             return 1;
         }
-        rq_enqueue(pcbs[i]);// FCFS
+        // rq_enqueue(pcbs[i]);// FCFS
     }
-    for (int i = 0; i < n_scripts; i++) {
+
+    PCB *batch = NULL;
+    int batch_start = 0;
+    int batch_len = 0;
+
+    if(background){
+        int rc = code_mem_load_script(stdin, &batch_start, &batch_len);
+        if(rc != 0) {
+            printf("error: code memory full\n");
+            for (int k = 0; k < n_scripts; k++) {
+                if (pcbs[k]){
+                    code_mem_free_range(starts[k], lens[k]);
+                    free(pcbs[k]);
+                }
+            }
+            return 1;
+        }
+    }
+
+    if(batch_len > 0) {
+        batch = pcb_create(batch_start, batch_len);
+        if (!batch) {
+            code_mem_free_range(batch_start, batch_len);
+            printf("Bad command: exec\n");
+            for (int k = 0; k < n_scripts; k++) {
+                if (pcbs[k]){
+                    code_mem_free_range(starts[k], lens[k]);
+                    free(pcbs[k]);
+                }
+            }
+            return 1;
+        }
+    }
+    
+    if(batch){
+        rq_prepend(batch);
+    }
+    for(int i = 0; i < n_scripts; i++) {
         rq_enqueue(pcbs[i]);
+    }
+
+    if(scheduler_active){
+        return 0;
     }
 
     if (strcmp(policy, "FCFS") == 0) scheduler_run_fcfs();
     else if ( strcmp(policy, "SJF") == 0) scheduler_run_sjf();
     else if (strcmp(policy, "RR")== 0) scheduler_run_rr();
     else if (strcmp(policy, "AGING") == 0) scheduler_run_aging();
+    else if (strcmp(policy, "RR30") == 0) scheduler_run_rr30();
     else {printf("Bad command: exec \n"); return 1;}
     return 0;
 }

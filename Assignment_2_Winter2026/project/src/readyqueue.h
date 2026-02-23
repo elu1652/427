@@ -15,5 +15,7 @@ PCB *rq_dequeue_sjf(void);
 void rq_enqueue_aging(PCB *P);
 void rq_age_all_except(PCB *running);
 
+void rq_prepend(PCB *p);
+
 
 #endif

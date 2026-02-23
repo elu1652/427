@@ -5,9 +5,11 @@
 #include "shellmemory.h"
 
 int parseInput(char ui[]);
+int scheduler_active = 0;
 
 #define MAX_USER_INPUT 1000  
 void scheduler_run_fcfs(void) {
+    scheduler_active = 1;
     while (!rq_is_empty()) {
         PCB *p = rq_dequeue();
         while (!pcb_is_done(p)) {
@@ -27,8 +29,10 @@ void scheduler_run_fcfs(void) {
         code_mem_free_range(p->start, p->length);
         free(p);
     }
+    scheduler_active = 0;
 }
 void scheduler_run_sjf(void) {
+    scheduler_active = 1;
     while (!rq_is_empty()){
         PCB *p = rq_dequeue_sjf();
         while (!pcb_is_done(p)) {
@@ -45,10 +49,12 @@ void scheduler_run_sjf(void) {
         code_mem_free_range( p-> start, p-> length);
         free(p);
     }
+    scheduler_active = 0;
 }
 
 #define RR_QUANTUM 2
 void scheduler_run_rr(void){
+    scheduler_active = 1;
     while (!rq_is_empty()){
         PCB *p = rq_dequeue();
 
@@ -73,9 +79,11 @@ void scheduler_run_rr(void){
             rq_enqueue(p);
         }
     }
+    scheduler_active = 0;
 }
 
 void scheduler_run_aging(void) {
+    scheduler_active = 1;
     while(!rq_is_empty()) {
         PCB *p = rq_dequeue();
         if (!pcb_is_done(p)){
@@ -97,4 +105,36 @@ void scheduler_run_aging(void) {
             rq_enqueue_aging(p);
         }
     }
+    scheduler_active = 0;
+}
+
+
+#define RR30_QUANTUM 30
+void scheduler_run_rr30(void){
+    scheduler_active = 1;
+    while (!rq_is_empty()){
+        PCB *p = rq_dequeue();
+
+        int steps =0;
+        while (steps < RR30_QUANTUM && !pcb_is_done(p)) {
+            int absIdx = pcb_next_abs_index(p);
+            char *line = code_mem_get_line(absIdx);
+
+            if(line) {
+                char temp[MAX_USER_INPUT];
+                strncpy(temp, line, MAX_USER_INPUT -1);
+                temp[MAX_USER_INPUT-1] = '\0';
+                parseInput(temp);
+            }
+            p -> pc++;
+            steps++;
+        }
+        if(pcb_is_done(p)) {
+            code_mem_free_range( p-> start, p-> length);
+            free(p);
+        } else {
+            rq_enqueue(p);
+        }
+    }
+    scheduler_active = 0;
 }

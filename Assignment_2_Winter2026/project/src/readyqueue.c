@@ -97,3 +97,10 @@ PCB *rq_dequeue_sjf(void){
     min_node -> next = NULL;
     return min_node;
 }
+
+void rq_prepend(PCB *p) {
+    if (!p) return;
+    p->next = head;
+    head = p;
+    if (tail == NULL) tail = p;
+}
