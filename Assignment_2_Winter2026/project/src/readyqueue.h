@@ -17,5 +17,9 @@ void rq_age_all_except(PCB *running);
 
 void rq_prepend(PCB *p);
 
+void rq_mt_init(void);
+void rq_mt_shutdown(void);
+PCB *rq_dequeue_blocking(void);  
+
 
 #endif

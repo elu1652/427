@@ -15,7 +15,7 @@
 
 // modify source() for A2 part1
 
-int MAX_ARGS_SIZE = 6; // for exec, max 3 scripts + policy + #
+int MAX_ARGS_SIZE = 6;
 
 int badcommand() {
     printf("Unknown Command\n");
@@ -134,6 +134,7 @@ source SCRIPT.TXT	Executes the file SCRIPT.TXT\n ";
 }
 
 int quit() {
+    scheduler_mt_shutdown();
     printf("Bye!\n");
     exit(0);
 }
@@ -178,6 +179,7 @@ int source(char *script) {
         return 1;
     }
     rq_enqueue(proc);
+    if (scheduler_mt_is_enabled()) return 0;
     scheduler_run_fcfs();
     return 0;
 }
@@ -376,7 +378,11 @@ int exec(char *args[], int args_size) {
     int background = 0;
     char *policy = args[args_size - 1];
     int n_scripts = 0;
-
+    int mt = 0;
+    if (args_size >= 2 && strcmp(args[args_size - 1], "MT") == 0) {
+        mt = 1;
+        args_size--; // pretend MT isn't there for parsing policy/#/scripts
+    }
     if (args_size >= 2 && strcmp(args[args_size - 1], "#") == 0) { // Check if last argument is "#"
         background = 1;
         policy = args[args_size - 2];
@@ -385,6 +391,13 @@ int exec(char *args[], int args_size) {
         background = 0;
         policy = args[args_size - 1];
         n_scripts = args_size - 2;   // exec + scripts + policy
+    }
+
+    if(mt){
+        if (!(strcmp(policy, "RR") == 0 || strcmp(policy, "RR30") == 0)) {
+            printf("bad command: exec\n");
+            return 1;
+        }
     }
 
     // Validate scripts count
@@ -490,14 +503,18 @@ int exec(char *args[], int args_size) {
             return 1;
         }
     }
-    
+    if (mt && !scheduler_mt_is_enabled()) {
+        scheduler_mt_enable(policy);   // starts workers + rq_mt_init()
+    }
     if(batch){
         rq_prepend(batch);
     }
     for(int i = 0; i < n_scripts; i++) {
         rq_enqueue(pcbs[i]);
     }
-
+    if (mt || scheduler_mt_is_enabled()) {
+        return 0;
+    }
     if(scheduler_active){
         return 0;
     }

@@ -1,25 +1,45 @@
 #include <stdlib.h>
 #include "pcb.h"
 #include "readyqueue.h"
-
+#include <pthread.h>
 
 static PCB *head = NULL;
 static PCB *tail = NULL;
+
+static int mt_enabled = 0;
+static int mt_shutdown = 0;
+static int avail = 0;
+
+static pthread_mutex_t qlock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  notempty = PTHREAD_COND_INITIALIZER;
 
 void rq_init(void) {
     head = tail = NULL;
 }
 int rq_is_empty(void) {
-    return head == NULL;
+    if (!mt_enabled) return head == NULL;
+    pthread_mutex_lock(&qlock);
+    int empty = (avail <= 0);   // or (head == NULL)
+    pthread_mutex_unlock(&qlock);
+    return empty;
 }
 void rq_enqueue(PCB *p) {
     p -> next = NULL;
+    if (!mt_enabled) {
+        if (!tail) head = tail = p;
+        else { tail->next = p; tail = p; }
+        return;
+    }
+    pthread_mutex_lock(&qlock);
     if (!tail){
         head = tail = p;
     } else {
         tail-> next = p;
         tail = p;
     }
+    avail++;
+    pthread_cond_signal(&notempty);
+    pthread_mutex_unlock(&qlock);
 }
 void rq_enqueue_aging(PCB *p) {
     p-> next = NULL;
@@ -100,7 +120,52 @@ PCB *rq_dequeue_sjf(void){
 
 void rq_prepend(PCB *p) {
     if (!p) return;
+
+    if (!mt_enabled) {
+        p->next = head;
+        head = p;
+        if (tail == NULL) tail = p;
+        return;
+    }
+
+    pthread_mutex_lock(&qlock);
+
     p->next = head;
     head = p;
     if (tail == NULL) tail = p;
+    avail++;
+    pthread_cond_signal(&notempty);
+    pthread_mutex_unlock(&qlock);
+}
+
+void rq_mt_init(void) {
+    mt_enabled = 1;
+    mt_shutdown = 0;
+    avail = 0;
+}
+
+void rq_mt_shutdown(void) {
+    pthread_mutex_lock(&qlock);
+    mt_shutdown = 1;
+    pthread_cond_broadcast(&notempty);
+    pthread_mutex_unlock(&qlock);
+}
+
+PCB *rq_dequeue_blocking(void) {
+    pthread_mutex_lock(&qlock);
+    while (avail <= 0 && !mt_shutdown) {
+        pthread_cond_wait(&notempty, &qlock);
+    }
+    if (mt_shutdown) {
+        pthread_mutex_unlock(&qlock);
+        return NULL;
+    }
+    // normal dequeue, but under lock
+    PCB *p = head;
+    head = head->next;
+    if (!head) tail = NULL;
+    p->next = NULL;
+    avail--;
+    pthread_mutex_unlock(&qlock);
+    return p;
 }

@@ -3,9 +3,19 @@
 #include "scheduler.h"
 #include "readyqueue.h"
 #include "shellmemory.h"
+#include <pthread.h>
 
 int parseInput(char ui[]);
 int scheduler_active = 0;
+
+static int mt_enabled = 0;
+static int mt_quantum = 0;     // 2 for RR, 30 for RR30
+static int mt_started = 0;
+
+static pthread_t w1, w2;
+
+// serialize parseInput to avoid races in interpreter/shellmemory variables
+static pthread_mutex_t exec_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #define MAX_USER_INPUT 1000  
 void scheduler_run_fcfs(void) {
@@ -136,5 +146,76 @@ void scheduler_run_rr30(void){
             rq_enqueue(p);
         }
     }
+    scheduler_active = 0;
+}
+
+static void *worker_main(void *arg) {
+    (void)arg;
+    for (;;) {
+        PCB *p = rq_dequeue_blocking();
+        if (p == NULL) {
+            // shutdown was requested
+            break;
+        }
+
+        int steps = 0;
+        while (steps < mt_quantum && !pcb_is_done(p)) {
+            int absIdx = pcb_next_abs_index(p);
+            char *line = code_mem_get_line(absIdx);
+            if (line) {
+                char temp[MAX_USER_INPUT];
+                strncpy(temp, line, MAX_USER_INPUT - 1);
+                temp[MAX_USER_INPUT - 1] = '\0';
+
+                pthread_mutex_lock(&exec_lock);
+                parseInput(temp);
+                pthread_mutex_unlock(&exec_lock);
+            }
+            p->pc++;
+            steps++;
+        }
+
+        if (pcb_is_done(p)) {
+            // cleanup
+            code_mem_free_range(p->start, p->length);
+            free(p);
+        } else {
+            rq_enqueue(p);
+        }
+    }
+    return NULL;
+}
+
+int scheduler_mt_is_enabled(void) { return mt_enabled; }
+
+void scheduler_mt_enable(const char *policy) {
+    if (mt_enabled) return;
+
+    // Only tested with RR/RR30 (you can enforce this in exec too)
+    if (strcmp(policy, "RR30") == 0) mt_quantum = 30;
+    else mt_quantum = 2;
+
+    rq_mt_init();
+
+    mt_enabled = 1;
+    scheduler_active = 1;
+
+    if (!mt_started) {
+        mt_started = 1;
+        pthread_create(&w1, NULL, worker_main, NULL);
+        pthread_create(&w2, NULL, worker_main, NULL);
+    }
+}
+
+void scheduler_mt_shutdown(void) {
+    if (!mt_enabled) return;
+
+    rq_mt_shutdown();
+
+    // join threads
+    pthread_join(w1, NULL);
+    pthread_join(w2, NULL);
+
+    mt_enabled = 0;
     scheduler_active = 0;
 }

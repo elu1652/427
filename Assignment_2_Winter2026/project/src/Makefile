@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=
+CFLAGS= -pthread
 FMT=indent
 RM=rm -f
 
