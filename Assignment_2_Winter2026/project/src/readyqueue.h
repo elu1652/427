@@ -21,5 +21,6 @@ void rq_mt_init(void);
 void rq_mt_shutdown(void);
 PCB *rq_dequeue_blocking(void);  
 
+PCB *rq_peek_head(void);
 
 #endif

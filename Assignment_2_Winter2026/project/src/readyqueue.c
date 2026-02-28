@@ -41,20 +41,26 @@ void rq_enqueue(PCB *p) {
     pthread_cond_signal(&notempty);
     pthread_mutex_unlock(&qlock);
 }
+
+static int aging_less(const PCB *a, const PCB *b) {
+    if (a->job_score != b->job_score) return a->job_score < b->job_score;
+    return a->pid < b->pid;   // tie-break by arrival order
+}
+
 void rq_enqueue_aging(PCB *p) {
     p-> next = NULL;
     if( head == NULL) {
         head = tail = p;
         return;
     }
-    if (p -> job_score < head -> job_score) {
+    if (aging_less(p, head)) {
         p-> next = head;
         head = p;
         return;
     }
     PCB *prev = head;
     PCB *cur = head -> next;
-    while (cur != NULL && cur -> job_score <= p-> job_score) {
+    while (cur != NULL && aging_less(cur, p)) {
         prev = cur;
         cur = cur -> next;
     }
@@ -64,6 +70,11 @@ void rq_enqueue_aging(PCB *p) {
         tail = p;
     }
 }
+
+PCB *rq_peek_head(void) {
+    return head;
+}
+
 void rq_age_all_except(PCB *running) {
     PCB *old = head;
     head = tail = NULL;

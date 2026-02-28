@@ -91,7 +91,7 @@ void scheduler_run_rr(void){
     }
     scheduler_active = 0;
 }
-
+/*
 void scheduler_run_aging(void) {
     scheduler_active = 1;
     while(!rq_is_empty()) {
@@ -111,13 +111,63 @@ void scheduler_run_aging(void) {
             code_mem_free_range( p-> start, p-> length);
             free(p);
         } else {
-            rq_age_all_except(p);
+            rq_age_all_except(NULL);
             rq_enqueue_aging(p);
         }
     }
     scheduler_active = 0;
 }
+*/
 
+void scheduler_run_aging(void) {
+    scheduler_active = 1;
+
+    PCB *cur = NULL;
+
+    while (cur != NULL || !rq_is_empty()) {
+
+        // If we don't have a current running job, take the best from the queue
+        if (cur == NULL) {
+            cur = rq_dequeue();
+            if (cur == NULL) break;
+        }
+
+        // Run exactly 1 instruction of cur
+        if (!pcb_is_done(cur)) {
+            int absIdx = pcb_next_abs_index(cur);
+            char *line = code_mem_get_line(absIdx);
+            if (line) {
+                char temp[MAX_USER_INPUT];
+                strncpy(temp, line, MAX_USER_INPUT - 1);
+                temp[MAX_USER_INPUT - 1] = '\0';
+                parseInput(temp);
+            }
+            cur->pc++;
+        }
+
+        // If finished, cleanup and fetch next
+        if (pcb_is_done(cur)) {
+            code_mem_free_range(cur->start, cur->length);
+            free(cur);
+            cur = NULL;
+            continue;
+        }
+
+        // Age everyone else (cur is not in queue, so NULL is fine)
+        rq_age_all_except(NULL);
+
+        // Decide whether to preempt:
+        // preempt ONLY if someone now has STRICTLY smaller job_score than cur
+        PCB *head = rq_peek_head();          // you'll add this helper (below)
+        if (head != NULL && head->job_score < cur->job_score) {
+            rq_enqueue_aging(cur);
+            cur = NULL;  // next iteration will dequeue the best
+        }
+        // else: tie or worse => keep running cur (do NOT enqueue)
+    }
+
+    scheduler_active = 0;
+}
 
 #define RR30_QUANTUM 30
 void scheduler_run_rr30(void){

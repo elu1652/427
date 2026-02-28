@@ -10,7 +10,7 @@ int parseInput(char ui[]);
 
 // Start of everything
 int main(int argc, char *argv[]) {
-    printf("Shell version 1.5 created Dec 2025\n");
+    printf("Shell version 1.4 created December 2024\n\n");
     fflush(stdout);                    // Make sure prompt shows up immediately
 
     char prompt = '$';  				// Shell prompt

@@ -475,20 +475,6 @@ int exec(char *args[], int args_size) {
     int batch_start = 0;
     int batch_len = 0;
 
-    if(background){
-        int rc = code_mem_load_script(stdin, &batch_start, &batch_len);
-        if(rc != 0) {
-            printf("error: code memory full\n");
-            for (int k = 0; k < n_scripts; k++) {
-                if (pcbs[k]){
-                    code_mem_free_range(starts[k], lens[k]);
-                    free(pcbs[k]);
-                }
-            }
-            return 1;
-        }
-    }
-
     if(batch_len > 0) {
         batch = pcb_create(batch_start, batch_len);
         if (!batch) {
@@ -507,15 +493,25 @@ int exec(char *args[], int args_size) {
         scheduler_mt_enable(policy);   // starts workers + rq_mt_init()
     }
     if(batch){
-        rq_prepend(batch);
+            rq_prepend(batch);
     }
-    for(int i = 0; i < n_scripts; i++) {
-        rq_enqueue(pcbs[i]);
+    if (strcmp(policy, "AGING") == 0) {
+        // enqueue in reverse so that "insert before equals" becomes FIFO among equals overall
+        for (int i = n_scripts - 1; i >= 0; i--) {
+            rq_enqueue_aging(pcbs[i]);
+        }
+    } else {
+        for (int i = 0; i < n_scripts; i++) {
+            rq_enqueue(pcbs[i]);
+        }
     }
+
+    if (background) return 0;    
+
     if (mt || scheduler_mt_is_enabled()) {
         return 0;
     }
-    if(scheduler_active){
+    if (scheduler_active && !background) {
         return 0;
     }
 
