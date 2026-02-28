@@ -381,7 +381,7 @@ int exec(char *args[], int args_size) {
     int mt = 0;
     if (args_size >= 2 && strcmp(args[args_size - 1], "MT") == 0) {
         mt = 1;
-        args_size--; // pretend MT isn't there for parsing policy/#/scripts
+        args_size--; // Exclude "MT" from further processing
     }
     if (args_size >= 2 && strcmp(args[args_size - 1], "#") == 0) { // Check if last argument is "#"
         background = 1;
@@ -393,6 +393,7 @@ int exec(char *args[], int args_size) {
         n_scripts = args_size - 2;   // exec + scripts + policy
     }
 
+    // MT only supports RR and RR30
     if(mt){
         if (!(strcmp(policy, "RR") == 0 || strcmp(policy, "RR30") == 0)) {
             printf("bad command: exec\n");
@@ -406,7 +407,7 @@ int exec(char *args[], int args_size) {
         return 1;
     }
 
-    // Determine if policy is valid
+    // Validate scheduling policy
     int policy_ok =
         (strcmp(policy, "FCFS") == 0) ||
         (strcmp(policy, "SJF") == 0)  ||
@@ -428,6 +429,8 @@ int exec(char *args[], int args_size) {
         }
     }
 
+
+    // Load each script file and create PCBs
     PCB *pcbs[3] = {NULL, NULL, NULL};
     int starts[3] = {0, 0, 0};
     int lens[3]   = {0, 0, 0};
@@ -444,6 +447,7 @@ int exec(char *args[], int args_size) {
             }
             return 1;
         }
+        // Load script into code memory
         int rc = code_mem_load_script(fp, &starts[i], &lens[i]);
         fclose(fp);
         if (rc != 0) {
@@ -468,9 +472,9 @@ int exec(char *args[], int args_size) {
             printf("Bad command: exec\n");
             return 1;
         }
-        // rq_enqueue(pcbs[i]);// FCFS
     }
 
+    // Create and prepend batch if needed
     PCB *batch = NULL;
     int batch_start = 0;
     int batch_len = 0;
@@ -489,14 +493,18 @@ int exec(char *args[], int args_size) {
             return 1;
         }
     }
+    
+    // Enable multithreading if requested
     if (mt && !scheduler_mt_is_enabled()) {
         scheduler_mt_enable(policy);   // starts workers + rq_mt_init()
     }
     if(batch){
             rq_prepend(batch);
     }
+    
+    // Enqueue processes to ready queue based on policy
     if (strcmp(policy, "AGING") == 0) {
-        // enqueue in reverse so that "insert before equals" becomes FIFO among equals overall
+        // enqueue in reverse if aging to ensure first script has highest priority
         for (int i = n_scripts - 1; i >= 0; i--) {
             rq_enqueue_aging(pcbs[i]);
         }
@@ -508,6 +516,7 @@ int exec(char *args[], int args_size) {
 
     if (background) return 0;    
 
+    // Return immediately if multithreading (scheduler handles)
     if (mt || scheduler_mt_is_enabled()) {
         return 0;
     }
@@ -515,6 +524,7 @@ int exec(char *args[], int args_size) {
         return 0;
     }
 
+    // Run scheduler with appropriate algorithm
     if (strcmp(policy, "FCFS") == 0) scheduler_run_fcfs();
     else if ( strcmp(policy, "SJF") == 0) scheduler_run_sjf();
     else if (strcmp(policy, "RR")== 0) scheduler_run_rr();

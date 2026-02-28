@@ -6,23 +6,29 @@
 static PCB *head = NULL;
 static PCB *tail = NULL;
 
+// Multithreading state and synchronization
 static int mt_enabled = 0;
 static int mt_shutdown = 0;
-static int avail = 0;
+static int count = 0;  // number of available items in queue
 
 static pthread_mutex_t qlock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  notempty = PTHREAD_COND_INITIALIZER;
 
+// Initialize empty queue
 void rq_init(void) {
     head = tail = NULL;
 }
+
+// Check if queue is empty
 int rq_is_empty(void) {
     if (!mt_enabled) return head == NULL;
     pthread_mutex_lock(&qlock);
-    int empty = (avail <= 0);   // or (head == NULL)
+    int empty = (count <= 0);   // or (head == NULL)
     pthread_mutex_unlock(&qlock);
     return empty;
 }
+
+// Add process to back of queue (FIFO)
 void rq_enqueue(PCB *p) {
     p -> next = NULL;
     if (!mt_enabled) {
@@ -37,16 +43,18 @@ void rq_enqueue(PCB *p) {
         tail-> next = p;
         tail = p;
     }
-    avail++;
+    count++;
     pthread_cond_signal(&notempty);
     pthread_mutex_unlock(&qlock);
 }
 
+// Comparison function for aging priority
 static int aging_less(const PCB *a, const PCB *b) {
     if (a->job_score != b->job_score) return a->job_score < b->job_score;
     return a->pid < b->pid;   // tie-break by arrival order
 }
 
+// Insert process in sorted order based on aging priority
 void rq_enqueue_aging(PCB *p) {
     p-> next = NULL;
     if( head == NULL) {
@@ -71,10 +79,12 @@ void rq_enqueue_aging(PCB *p) {
     }
 }
 
+// Return head without removing
 PCB *rq_peek_head(void) {
     return head;
 }
 
+// Age all processes in queue except the running one
 void rq_age_all_except(PCB *running) {
     PCB *old = head;
     head = tail = NULL;
@@ -88,6 +98,8 @@ void rq_age_all_except(PCB *running) {
         old = next;
     }
 }
+
+// Remove and return process from front of queue (FIFO)
 PCB *rq_dequeue(void){
     if (!head) {
         return NULL;
@@ -101,6 +113,7 @@ PCB *rq_dequeue(void){
     return p;
 }
 
+// Remove and return shortest job from queue
 PCB *rq_dequeue_sjf(void){
     if (!head) {
         return NULL;
@@ -129,6 +142,7 @@ PCB *rq_dequeue_sjf(void){
     return min_node;
 }
 
+// Add process to front of queue
 void rq_prepend(PCB *p) {
     if (!p) return;
 
@@ -144,17 +158,19 @@ void rq_prepend(PCB *p) {
     p->next = head;
     head = p;
     if (tail == NULL) tail = p;
-    avail++;
+    count++;
     pthread_cond_signal(&notempty);
     pthread_mutex_unlock(&qlock);
 }
 
+// Enable multithreading mode for queue
 void rq_mt_init(void) {
     mt_enabled = 1;
     mt_shutdown = 0;
-    avail = 0;
+    count = 0;
 }
 
+// Signal shutdown to all waiting threads
 void rq_mt_shutdown(void) {
     pthread_mutex_lock(&qlock);
     mt_shutdown = 1;
@@ -162,9 +178,10 @@ void rq_mt_shutdown(void) {
     pthread_mutex_unlock(&qlock);
 }
 
+// Blocking dequeue for worker threads (waits if queue empty)
 PCB *rq_dequeue_blocking(void) {
     pthread_mutex_lock(&qlock);
-    while (avail <= 0 && !mt_shutdown) {
+    while (count <= 0 && !mt_shutdown) {
         pthread_cond_wait(&notempty, &qlock);
     }
     if (mt_shutdown) {
@@ -176,7 +193,7 @@ PCB *rq_dequeue_blocking(void) {
     head = head->next;
     if (!head) tail = NULL;
     p->next = NULL;
-    avail--;
+    count--;
     pthread_mutex_unlock(&qlock);
     return p;
 }

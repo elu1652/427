@@ -14,10 +14,11 @@ static int mt_started = 0;
 
 static pthread_t w1, w2;
 
-// serialize parseInput to avoid races in interpreter/shellmemory variables
 static pthread_mutex_t exec_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #define MAX_USER_INPUT 1000  
+
+// First Come First Served scheduling
 void scheduler_run_fcfs(void) {
     scheduler_active = 1;
     while (!rq_is_empty()) {
@@ -35,12 +36,14 @@ void scheduler_run_fcfs(void) {
             parseInput(temp);
             p->pc++;
         }
-        //cleanup 
+        // Clean up
         code_mem_free_range(p->start, p->length);
         free(p);
     }
     scheduler_active = 0;
 }
+
+// Shortest Job First scheduling
 void scheduler_run_sjf(void) {
     scheduler_active = 1;
     while (!rq_is_empty()){
@@ -62,6 +65,7 @@ void scheduler_run_sjf(void) {
     scheduler_active = 0;
 }
 
+// Round Robin with quantum of 2
 #define RR_QUANTUM 2
 void scheduler_run_rr(void){
     scheduler_active = 1;
@@ -91,34 +95,8 @@ void scheduler_run_rr(void){
     }
     scheduler_active = 0;
 }
-/*
-void scheduler_run_aging(void) {
-    scheduler_active = 1;
-    while(!rq_is_empty()) {
-        PCB *p = rq_dequeue();
-        if (!pcb_is_done(p)){
-            int absIdx = pcb_next_abs_index(p);
-            char *line = code_mem_get_line(absIdx);
-            if(line) {
-                char temp[MAX_USER_INPUT];
-                strncpy(temp, line, MAX_USER_INPUT -1);
-                temp[MAX_USER_INPUT -1] = '\0';
-                parseInput(temp);
-            }
-            p -> pc++;
-        }
-        if (pcb_is_done(p)){
-            code_mem_free_range( p-> start, p-> length);
-            free(p);
-        } else {
-            rq_age_all_except(NULL);
-            rq_enqueue_aging(p);
-        }
-    }
-    scheduler_active = 0;
-}
-*/
 
+// Aging-based priority scheduling (preempts when higher priority job arrives)
 void scheduler_run_aging(void) {
     scheduler_active = 1;
 
@@ -153,22 +131,21 @@ void scheduler_run_aging(void) {
             continue;
         }
 
-        // Age everyone else (cur is not in queue, so NULL is fine)
+        // Age everyone else 
         rq_age_all_except(NULL);
 
-        // Decide whether to preempt:
-        // preempt ONLY if someone now has STRICTLY smaller job_score than cur
-        PCB *head = rq_peek_head();          // you'll add this helper (below)
+        // preempt only if someone now has a smaller job_score than cur
+        PCB *head = rq_peek_head();     
         if (head != NULL && head->job_score < cur->job_score) {
             rq_enqueue_aging(cur);
             cur = NULL;  // next iteration will dequeue the best
         }
-        // else: tie or worse => keep running cur (do NOT enqueue)
     }
 
     scheduler_active = 0;
 }
 
+// Round Robin with quantum of 30
 #define RR30_QUANTUM 30
 void scheduler_run_rr30(void){
     scheduler_active = 1;
@@ -199,6 +176,7 @@ void scheduler_run_rr30(void){
     scheduler_active = 0;
 }
 
+// Worker thread function for multithreading
 static void *worker_main(void *arg) {
     (void)arg;
     for (;;) {
@@ -238,10 +216,11 @@ static void *worker_main(void *arg) {
 
 int scheduler_mt_is_enabled(void) { return mt_enabled; }
 
+// Enable multithreading with worker threads
 void scheduler_mt_enable(const char *policy) {
     if (mt_enabled) return;
 
-    // Only tested with RR/RR30 (you can enforce this in exec too)
+    // Only tested with RR/RR30
     if (strcmp(policy, "RR30") == 0) mt_quantum = 30;
     else mt_quantum = 2;
 
@@ -257,6 +236,7 @@ void scheduler_mt_enable(const char *policy) {
     }
 }
 
+// Shutdown multithreading by signaling workers and joining threads
 void scheduler_mt_shutdown(void) {
     if (!mt_enabled) return;
 
