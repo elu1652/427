@@ -1,0 +1,4 @@
+exec prog1 RR #
+echo A
+exec prog2 RR
+echo B
