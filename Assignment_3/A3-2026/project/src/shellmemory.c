@@ -3,36 +3,10 @@
 #include <stdio.h>
 #include "shellmemory.h"
 
-static char *codeMem[CODE_MEM_SIZE];
-static int codeTop = 0; //next free slot
-int code_mem_load_script(FILE *fp, int *out_start, int *out_len) {
-    char buf[MAX_CODE_LINE + 5];
-    int start = codeTop;
-    int count = 0;
-    while (fgets(buf , sizeof(buf), fp) != NULL){
-        if ( codeTop >= CODE_MEM_SIZE) return -1;
-        codeMem[codeTop]=strdup(buf);
-        if (!codeMem[codeTop]) return -1;
-        codeTop++;
-        count++;
-    }
-    *out_start = start;
-    *out_len = count;
-    return 0;
-}
-char *code_mem_get_line(int index) {
-    if(index < 0 || index >= CODE_MEM_SIZE) return NULL;
-    return codeMem[index];
-}
-void code_mem_free_range(int start, int len) {
-    for (int i=0; i< len; i++) {
-        int idx = start + i;
-        if(idx >= 0 && idx < CODE_MEM_SIZE && codeMem[idx]){
-            free(codeMem[idx]);
-            codeMem[idx]=NULL;
-        }
-    }
-}
+
+static char *frameStore[FRAME_STORE_SIZE];
+static int frameUsed[FRAME_COUNT];
+
 struct memory_struct {
     char *var;
     char *value;
@@ -60,6 +34,7 @@ void mem_init(){
         shellmemory[i].value = "none";
     }
 }
+
 
 // Set key value pair
 void mem_set_value(char *var_in, char *value_in) {
@@ -94,4 +69,75 @@ char *mem_get_value(char *var_in) {
         } 
     }
     return NULL;
+}
+
+void code_mem_init(void) {
+    for (int i = 0; i < FRAME_STORE_SIZE; i++) {
+        frameStore[i] = NULL;
+    }
+    for (int f = 0; f < FRAME_COUNT; f++) {
+        frameUsed[f] = 0;
+    }
+}
+
+int code_mem_find_free_frame(void) {
+    for (int f = 0; f < FRAME_COUNT; f++) {
+        if (frameUsed[f] == 0) return f;
+    }
+    return -1;
+}
+
+int code_mem_load_page(FILE *fp) {
+    int frame = code_mem_find_free_frame();
+    if (frame == -1) return -1; // No free frame available
+
+    int base = frame * FRAME_SIZE;
+    char buf[MAX_CODE_LINE + 5]; 
+
+    for (int i = 0; i < FRAME_SIZE; i++) {
+        if (fgets(buf, sizeof(buf), fp) != NULL) {
+            frameStore[base + i] = strdup(buf); // Load line into frame
+            if (!frameStore[base + i]) return -1; 
+        } else {
+            frameStore[base + i] = NULL; 
+        }
+    }
+
+    frameUsed[frame] = 1;
+    return frame;
+}
+
+char *code_mem_get_line(int index) {
+    if (index < 0 || index >= FRAME_STORE_SIZE) return NULL;
+    return frameStore[index];
+}
+
+void code_mem_free_frame(int frame) {
+    if (frame < 0 || frame >= FRAME_COUNT) return;
+
+    int base = frame * FRAME_SIZE;
+    for (int i = 0; i < FRAME_SIZE; i++) {
+        if (frameStore[base + i]) {
+            free(frameStore[base + i]);
+            frameStore[base + i] = NULL;
+        }
+    }
+    frameUsed[frame] = 0;
+    
+}
+
+int code_mem_load_page_into_frame(FILE *fp, int frame) {
+    int base = frame * FRAME_SIZE;
+    char buf[MAX_CODE_LINE + 5];
+
+    for (int i = 0; i < FRAME_SIZE; i++) {
+        if (fgets(buf, sizeof(buf), fp) != NULL) {
+            frameStore[base + i] = strdup(buf);
+        } else {
+            frameStore[base + i] = NULL;
+        }
+    }
+
+    frameUsed[frame] = 1;
+    return frame;
 }

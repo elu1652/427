@@ -7,10 +7,11 @@
 #include "shellmemory.h"
 
 int parseInput(char ui[]);
+void init_frame_info();
 
 // Start of everything
 int main(int argc, char *argv[]) {
-    printf("Shell version 1.4 created December 2024\n\n");
+    printf("Frame Store Size = %d; Variable Store Size = %d\n", FRAME_STORE_SIZE, MEM_SIZE);
     fflush(stdout);                    // Make sure prompt shows up immediately
 
     char prompt = '$';  				// Shell prompt
@@ -26,6 +27,8 @@ int main(int argc, char *argv[]) {
     
     //init shell memory
     mem_init();
+    code_mem_init();
+    init_frame_info();
     while(1){
         if(interactive){ // Print prompt only in interactive mode and not batch mode
             printf("%c ", prompt);

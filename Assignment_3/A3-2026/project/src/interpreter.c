@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include "interpreter.h"
 
 
 // modify source() for A2 part1
@@ -41,6 +42,267 @@ int my_touch(char *fileName);
 int my_cd(char *dirname);
 int run(char **args);
 int exec(char *args[], int args_size);
+
+typedef struct frameInfo{
+    ScriptEntry *owner;
+    int page_number;
+    int valid;
+} frameInfo;
+
+static ScriptEntry *script_list = NULL;
+static frameInfo frame_info[FRAME_COUNT];
+
+// Helper function to find a script entry by filename
+static ScriptEntry *find_script(const char *filename) {
+    ScriptEntry *cur = script_list;
+    while (cur != NULL) {
+        if (strcmp(cur->name, filename) == 0) {
+            return cur;
+        }
+        cur = cur->next;
+    }
+    return NULL;
+}
+
+
+static int count_script_lines(FILE *fp) {
+    char buf[MAX_CODE_LINE + 5];
+    int count = 0;
+
+    while (fgets(buf, sizeof(buf), fp) != NULL) {
+        count++;
+    }
+
+    rewind(fp);
+    return count;
+}
+
+static void free_loaded_pages(PCB *p) {
+    if (!p) return;
+
+    for (int i = 0; i < p->pages_max; i++) {
+        if (p->page_table[i] != -1) {
+            int frame = p->page_table[i];
+            code_mem_free_frame(frame);
+            frame_info[frame].owner = NULL;
+            frame_info[frame].page_number = -1;
+            frame_info[frame].valid = 0;
+            p->page_table[i] = -1;
+        }
+    }
+}
+
+static int load_script_pages(FILE *fp, PCB *p) {
+    int initial_pages = (p->pages_max < 2) ? p->pages_max : 2;
+
+    for (int page = 0; page < initial_pages; page++) {
+        int frame = code_mem_load_page(fp);
+        if (frame < 0) {
+            return -1;
+        }
+        p->page_table[page] = frame;
+        frame_info[frame].owner = p->script;
+        frame_info[frame].page_number = page;
+        frame_info[frame].valid = 1;
+    }
+
+    return 0;
+}
+
+static PCB *load_script_as_process(const char *filename) {
+    ScriptEntry *entry = find_script(filename);
+
+    if(entry != NULL) {
+        entry->ref_count++;
+        PCB *p = pcb_create(entry->length, entry->pages_max);
+        if (!p) {
+            entry->ref_count--;
+            return NULL;
+        }
+        p->script = entry;
+        p->page_table = entry->page_table;
+
+        return p;
+    }
+
+    FILE *fp = fopen(filename, "r");
+    if (!fp) return NULL;
+
+    int length = count_script_lines(fp);
+    int pages_max = (length + FRAME_SIZE - 1) / FRAME_SIZE;
+
+    PCB *p = pcb_create(length, pages_max);
+    if (!p) {
+        fclose(fp);
+        return NULL;
+    }
+
+    // Create a shared script entry
+    entry = malloc(sizeof(ScriptEntry));
+    if (!entry) {
+        pcb_free(p);
+        fclose(fp);
+        return NULL;
+    }
+
+    entry->name = strdup(filename);
+    if(!entry->name) {
+        free(entry);
+        pcb_free(p);
+        fclose(fp);
+        return NULL;
+    }
+
+    entry->length = length;
+    entry->pages_max = pages_max;
+    entry->page_table = malloc(pages_max * sizeof(int));
+    if (!entry->page_table) {
+        free(entry->name);
+        free(entry);
+        pcb_free(p);
+        fclose(fp);
+        return NULL;
+    }
+
+    for (int i = 0; i < pages_max; i++) {
+        entry->page_table[i] = -1; // Initialize page table entries to -1 (indicating not allocated)
+    }
+    p->script = entry;
+    p->page_table = entry->page_table;
+
+    if (load_script_pages(fp, p) != 0) {
+        free(entry->page_table);
+        free(entry->name);
+        free(entry);
+        pcb_free(p);
+        fclose(fp);
+        return NULL;    
+    }
+
+
+    entry->ref_count = 1;
+    entry->next = script_list;
+    script_list = entry;
+
+
+    fclose(fp);
+    return p;
+}
+
+// Helper function to release pages of a PCB and clean up script entry if needed
+void release_script_pages(PCB *p) {
+    if (!p) return;
+
+    ScriptEntry *cur = p->script;
+    if (!cur) {
+        pcb_free(p);
+        return;
+    }
+
+    cur->ref_count--;
+    
+    /*
+    if (cur->ref_count == 0) {
+
+        ScriptEntry *prev = NULL;
+        ScriptEntry *walk = script_list;
+        while (walk && walk != cur) {
+            prev = walk;
+            walk = walk->next;
+        }
+
+        if (walk) {
+            if (prev == NULL) script_list = walk->next;
+            else prev->next = walk->next;
+        }
+
+        free(cur->page_table);
+        free(cur->name);
+        free(cur);
+    }
+    */
+
+    pcb_free(p);
+}
+
+// Helper function to load a missing page for a PCB (used during page fault handling)
+int load_missing_page(PCB *p, int page) {
+    // Find the script entry corresponding to this PCB to determine which script file to load the missing page from
+    ScriptEntry *entry = p->script;
+    if (!entry) return -1;
+
+    // Open the script file associated with this entry to load the missing page
+    FILE *fp = fopen(entry->name, "r");
+    if (!fp) return -1;
+
+    // Plus 5 to handle potential newline and null terminator, ensuring we read the full line correctly
+    char buf[MAX_CODE_LINE + 5];
+
+    // Skip lines before the target page
+    int lines_to_skip = page * FRAME_SIZE;
+    for (int i = 0; i < lines_to_skip; i++) {
+        if (fgets(buf, sizeof(buf), fp) == NULL) {
+            fclose(fp);
+            return -1;
+        }
+    }
+
+    // Load the target page into memory and get the frame number. If loading fails, we return -1 to indicate an error.
+    int frame = code_mem_load_page(fp);
+
+    if (frame < 0){
+        int victim = rand() % FRAME_COUNT; // Randomly select a victim frame to evict 
+        printf("Victim page contents:\n");
+
+        int base = victim * FRAME_SIZE;
+        for (int i = 0; i < FRAME_SIZE; i++) {
+            if (code_mem_get_line(base + i)) {
+                printf("%s", code_mem_get_line(base + i));
+            }
+        }
+
+        printf("End of victim page contents.\n");
+
+        ScriptEntry *victim_owner = frame_info[victim].owner;
+        int victim_page = frame_info[victim].page_number;
+
+        if (victim_owner && victim_page != -1) {
+            victim_owner->page_table[victim_page] = -1;
+        }
+
+        code_mem_free_frame(victim);
+
+        frame_info[victim].owner = NULL;
+        frame_info[victim].page_number = -1;
+        frame_info[victim].valid = 0;
+
+        frame = code_mem_load_page_into_frame(fp, victim);
+        if (frame < 0) {
+            fclose(fp);
+            return -1;
+        }
+    }
+
+    // Update both the PCB and the shared script entry
+    p->page_table[page] = frame;
+    entry->page_table[page] = frame;
+
+    frame_info[frame].owner = entry;
+    frame_info[frame].page_number = page;
+    frame_info[frame].valid = 1;
+
+    fclose(fp);
+    return 0;
+}
+
+void init_frame_info() {
+    for (int i = 0; i < FRAME_COUNT; i++) {
+        frame_info[i].owner = NULL;
+        frame_info[i].page_number = -1;
+        frame_info[i].valid = 0;
+    }
+}
+
 
 // Interpret commands and their arguments
 int interpreter(char *command_args[], int args_size) {
@@ -163,50 +425,17 @@ int print(char *var) {
 }
 
 int source(char *script) {
-    FILE *p = fopen(script, "rt");
-    if (p == NULL) return badcommandFileDoesNotExist();
-    int start, len;
-    if (code_mem_load_script(p, &start, &len) != 0) {
-        fclose(p);
-        printf("Bad command: File too large\n"); 
-        return 1;
-    }
-    fclose(p);
-    PCB *proc = pcb_create(start, len);
+    PCB *proc = load_script_as_process(script);
     if (!proc) {
-        code_mem_free_range(start, len);
-        printf("Bad command: Out of memory\n");
-        return 1;
+        return badcommandFileDoesNotExist();
     }
+
     rq_enqueue(proc);
+
     if (scheduler_mt_is_enabled()) return 0;
     scheduler_run_fcfs();
     return 0;
 }
-/*int source(char *script) {
-    int errCode = 0;
-    char line[MAX_USER_INPUT];
-    FILE *p = fopen(script, "rt");      // the program is in a file
-
-    if (p == NULL) {
-        return badcommandFileDoesNotExist();
-    }
-
-    fgets(line, MAX_USER_INPUT - 1, p);
-    while (1) {
-        errCode = parseInput(line);     // which calls interpreter()
-        memset(line, 0, sizeof(line));
-
-        if (feof(p)) {
-            break;
-        }
-        fgets(line, MAX_USER_INPUT - 1, p);
-    }
-
-    fclose(p);
-
-    return errCode;
-}*/
 
 int echo(char *string) {
     if (string[0] == '$') {
@@ -419,75 +648,18 @@ int exec(char *args[], int args_size) {
         return 1;
     }
 
-    // Check for duplicate script names
-    for (int i = 1; i <= n_scripts; i++) {
-        for (int j = i + 1; j <= n_scripts; j++) {
-            if (strcmp(args[i], args[j]) == 0) {
-                printf("bad command: exec\n");
-                return 1;
-            }
-        }
-    }
 
 
     // Load each script file and create PCBs
     PCB *pcbs[3] = {NULL, NULL, NULL};
-    int starts[3] = {0, 0, 0};
-    int lens[3]   = {0, 0, 0};
 
     for (int i = 0; i < n_scripts; i++) {
-        FILE *fp = fopen(args[i+1], "r");
-        if(!fp) {
+        pcbs[i] = load_script_as_process(args[i + 1]);
+        if (!pcbs[i]) {
             printf("Bad command: File not found\n");
             for (int k = 0; k < i; k++) {
                 if (pcbs[k]) {
-                    code_mem_free_range(starts[k], lens[k]);
-                    free(pcbs[k]);
-                }
-            }
-            return 1;
-        }
-        // Load script into code memory
-        int rc = code_mem_load_script(fp, &starts[i], &lens[i]);
-        fclose(fp);
-        if (rc != 0) {
-            printf("error: code memory full\n");
-            for ( int k=0; k<i; k++) {
-                if (pcbs[k]){
-                    code_mem_free_range(starts[k], lens[k]);
-                    free(pcbs[k]);
-                }
-            }
-            return 1;
-        }
-        pcbs[i] = pcb_create(starts[i], lens[i]);
-        if (!pcbs[i]) {
-            code_mem_free_range(starts[i], lens[i]);
-            for (int k = 0; k < i; k++) {
-                if (pcbs[k]){
-                    code_mem_free_range(starts[k], lens[k]);
-                    free(pcbs[k]);
-                }
-            }
-            printf("Bad command: exec\n");
-            return 1;
-        }
-    }
-
-    // Create and prepend batch if needed
-    PCB *batch = NULL;
-    int batch_start = 0;
-    int batch_len = 0;
-
-    if(batch_len > 0) {
-        batch = pcb_create(batch_start, batch_len);
-        if (!batch) {
-            code_mem_free_range(batch_start, batch_len);
-            printf("Bad command: exec\n");
-            for (int k = 0; k < n_scripts; k++) {
-                if (pcbs[k]){
-                    code_mem_free_range(starts[k], lens[k]);
-                    free(pcbs[k]);
+                    release_script_pages(pcbs[k]);
                 }
             }
             return 1;
@@ -497,9 +669,6 @@ int exec(char *args[], int args_size) {
     // Enable multithreading if requested
     if (mt && !scheduler_mt_is_enabled()) {
         scheduler_mt_enable(policy);   // starts workers + rq_mt_init()
-    }
-    if(batch){
-            rq_prepend(batch);
     }
     
     // Enqueue processes to ready queue based on policy

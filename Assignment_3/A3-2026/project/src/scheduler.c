@@ -18,6 +18,9 @@ static pthread_mutex_t exec_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #define MAX_USER_INPUT 1000  
 
+void release_script_pages(PCB *p);
+int load_missing_page(PCB *p, int page);
+
 // First Come First Served scheduling
 void scheduler_run_fcfs(void) {
     scheduler_active = 1;
@@ -37,8 +40,7 @@ void scheduler_run_fcfs(void) {
             p->pc++;
         }
         // Clean up
-        code_mem_free_range(p->start, p->length);
-        free(p);
+        release_script_pages(p);
     }
     scheduler_active = 0;
 }
@@ -59,8 +61,7 @@ void scheduler_run_sjf(void) {
             }
             p -> pc++;
         }
-        code_mem_free_range( p-> start, p-> length);
-        free(p);
+        release_script_pages(p);
     }
     scheduler_active = 0;
 }
@@ -74,22 +75,37 @@ void scheduler_run_rr(void){
 
         int steps =0;
         while (steps < RR_QUANTUM && !pcb_is_done(p)) {
+            int page = pcb_get_page(p);
+
+            if (p->page_table[page] == -1) {
+                printf("Page fault!\n");
+
+                if (load_missing_page(p, page) != 0) {
+                    printf("Error: could not load missing page\n");
+                    release_script_pages(p);
+                    break;
+                }
+
+                rq_enqueue(p);
+                break;
+            }
+
             int absIdx = pcb_next_abs_index(p);
             char *line = code_mem_get_line(absIdx);
 
-            if(line) {
+            if (line) {
                 char temp[MAX_USER_INPUT];
-                strncpy(temp, line, MAX_USER_INPUT -1);
-                temp[MAX_USER_INPUT-1] = '\0';
+                strncpy(temp, line, MAX_USER_INPUT - 1);
+                temp[MAX_USER_INPUT - 1] = '\0';
                 parseInput(temp);
             }
-            p -> pc++;
+
+            p->pc++;
             steps++;
         }
-        if(pcb_is_done(p)) {
-            code_mem_free_range( p-> start, p-> length);
-            free(p);
-        } else {
+        if (pcb_is_done(p)) {
+            release_script_pages(p);
+        } else if (steps == RR_QUANTUM) {
             rq_enqueue(p);
         }
     }
@@ -125,8 +141,7 @@ void scheduler_run_aging(void) {
 
         // If finished, cleanup and fetch next
         if (pcb_is_done(cur)) {
-            code_mem_free_range(cur->start, cur->length);
-            free(cur);
+            release_script_pages(cur);
             cur = NULL;
             continue;
         }
@@ -166,9 +181,8 @@ void scheduler_run_rr30(void){
             p -> pc++;
             steps++;
         }
-        if(pcb_is_done(p)) {
-            code_mem_free_range( p-> start, p-> length);
-            free(p);
+        if (pcb_is_done(p)) {
+            release_script_pages(p);
         } else {
             rq_enqueue(p);
         }
@@ -204,9 +218,7 @@ static void *worker_main(void *arg) {
         }
 
         if (pcb_is_done(p)) {
-            // cleanup
-            code_mem_free_range(p->start, p->length);
-            free(p);
+            release_script_pages(p);
         } else {
             rq_enqueue(p);
         }
@@ -249,3 +261,4 @@ void scheduler_mt_shutdown(void) {
     mt_enabled = 0;
     scheduler_active = 0;
 }
+
