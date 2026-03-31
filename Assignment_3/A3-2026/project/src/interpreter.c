@@ -43,6 +43,8 @@ int my_cd(char *dirname);
 int run(char **args);
 int exec(char *args[], int args_size);
 
+static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page);
+
 typedef struct frameInfo{
     ScriptEntry *owner;
     int page_number;
@@ -96,17 +98,55 @@ static int load_script_pages(FILE *fp, PCB *p) {
     int initial_pages = (p->pages_max < 2) ? p->pages_max : 2;
 
     for (int page = 0; page < initial_pages; page++) {
-        int frame = code_mem_load_page(fp);
-        if (frame < 0) {
+        if (load_page_with_eviction(fp, p->script, page) < 0) {
             return -1;
         }
-        p->page_table[page] = frame;
-        frame_info[frame].owner = p->script;
-        frame_info[frame].page_number = page;
-        frame_info[frame].valid = 1;
     }
 
     return 0;
+}
+
+static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page) {
+    int frame = code_mem_load_page(fp);
+    if (frame >= 0) {
+        entry->page_table[page] = frame;
+        frame_info[frame].owner = entry;
+        frame_info[frame].page_number = page;
+        frame_info[frame].valid = 1;
+        return frame;
+    }
+
+    int victim = rand() % FRAME_COUNT;
+
+    printf("Victim page contents:\n");
+    int base = victim * FRAME_SIZE;
+    for (int i = 0; i < FRAME_SIZE; i++) {
+        char *line = code_mem_get_line(base + i);
+        if (line) printf("%s", line);
+    }
+    printf("End of victim page contents.\n");
+
+    ScriptEntry *victim_owner = frame_info[victim].owner;
+    int victim_page = frame_info[victim].page_number;
+
+    if (victim_owner && victim_page != -1) {
+        victim_owner->page_table[victim_page] = -1;
+    }
+
+    code_mem_free_frame(victim);
+
+    frame_info[victim].owner = NULL;
+    frame_info[victim].page_number = -1;
+    frame_info[victim].valid = 0;
+
+    frame = code_mem_load_page_into_frame(fp, victim);
+    if (frame < 0) return -1;
+
+    entry->page_table[page] = frame;
+    frame_info[frame].owner = entry;
+    frame_info[frame].page_number = page;
+    frame_info[frame].valid = 1;
+    return frame;
 }
 
 static PCB *load_script_as_process(const char *filename) {
@@ -227,18 +267,13 @@ void release_script_pages(PCB *p) {
 
 // Helper function to load a missing page for a PCB (used during page fault handling)
 int load_missing_page(PCB *p, int page) {
-    // Find the script entry corresponding to this PCB to determine which script file to load the missing page from
     ScriptEntry *entry = p->script;
     if (!entry) return -1;
 
-    // Open the script file associated with this entry to load the missing page
     FILE *fp = fopen(entry->name, "r");
     if (!fp) return -1;
 
-    // Plus 5 to handle potential newline and null terminator, ensuring we read the full line correctly
     char buf[MAX_CODE_LINE + 5];
-
-    // Skip lines before the target page
     int lines_to_skip = page * FRAME_SIZE;
     for (int i = 0; i < lines_to_skip; i++) {
         if (fgets(buf, sizeof(buf), fp) == NULL) {
@@ -247,54 +282,10 @@ int load_missing_page(PCB *p, int page) {
         }
     }
 
-    // Load the target page into memory and get the frame number. If loading fails, we return -1 to indicate an error.
-    int frame = code_mem_load_page(fp);
-
-    if (frame < 0){
-        int victim = rand() % FRAME_COUNT; // Randomly select a victim frame to evict 
-        printf("Victim page contents:\n");
-
-        int base = victim * FRAME_SIZE;
-        for (int i = 0; i < FRAME_SIZE; i++) {
-            if (code_mem_get_line(base + i)) {
-                printf("%s", code_mem_get_line(base + i));
-            }
-        }
-
-        printf("End of victim page contents.\n");
-
-        ScriptEntry *victim_owner = frame_info[victim].owner;
-        int victim_page = frame_info[victim].page_number;
-
-        if (victim_owner && victim_page != -1) {
-            victim_owner->page_table[victim_page] = -1;
-        }
-
-        code_mem_free_frame(victim);
-
-        frame_info[victim].owner = NULL;
-        frame_info[victim].page_number = -1;
-        frame_info[victim].valid = 0;
-
-        frame = code_mem_load_page_into_frame(fp, victim);
-        if (frame < 0) {
-            fclose(fp);
-            return -1;
-        }
-    }
-
-    // Update both the PCB and the shared script entry
-    p->page_table[page] = frame;
-    entry->page_table[page] = frame;
-
-    frame_info[frame].owner = entry;
-    frame_info[frame].page_number = page;
-    frame_info[frame].valid = 1;
-
+    int frame = load_page_with_eviction(fp, entry, page);
     fclose(fp);
-    return 0;
+    return (frame < 0) ? -1 : 0;
 }
-
 void init_frame_info() {
     for (int i = 0; i < FRAME_COUNT; i++) {
         frame_info[i].owner = NULL;
