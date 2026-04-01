@@ -46,7 +46,7 @@ int main(int argc, char *argv[]) {
 int wordEnding(char c) {
     // You may want to add ';' to this at some point,
     // or you may want to find a different way to implement chains.
-    return c == '\0' || c == '\n' || c == ' ';
+    return c == '\0' || c == '\n' || c == ' ' || c == '\t';
 }
 
 int parseInput(char inp[]) {
@@ -62,7 +62,7 @@ int parseInput(char inp[]) {
         int wordlen;
         
         
-        for (ix = 0; command[ix] == ' ' && ix < 1000; ix++); // skip white spaces
+        for (ix = 0; (command[ix] == ' ' || command[ix] == '\t') && ix < 1000; ix++); // skip white spaces
         if(command[ix] == '\0' || command[ix] == '\n') { //If it's an empty command
             command = strtok_r(NULL, ";", &saveptr); // Get next command from same input string
             continue;

@@ -13,4 +13,7 @@ typedef struct ScriptEntry {
     struct ScriptEntry *next;
 } ScriptEntry;
 
+void update_frame_time(int frame);
+void cleanup_all_scripts(void);
+
 #endif

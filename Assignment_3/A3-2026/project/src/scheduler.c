@@ -4,6 +4,7 @@
 #include "readyqueue.h"
 #include "shellmemory.h"
 #include <pthread.h>
+#include "interpreter.h"
 
 int parseInput(char ui[]);
 int scheduler_active = 0;
@@ -19,29 +20,57 @@ static pthread_mutex_t exec_lock = PTHREAD_MUTEX_INITIALIZER;
 #define MAX_USER_INPUT 1000  
 
 void release_script_pages(PCB *p);
-int load_missing_page(PCB *p, int page);
+int load_missing_page(PCB *p, int page, int *did_evict);
 
 // First Come First Served scheduling
 void scheduler_run_fcfs(void) {
     scheduler_active = 1;
     while (!rq_is_empty()) {
         PCB *p = rq_dequeue();
+
         while (!pcb_is_done(p)) {
+            int page = pcb_get_page(p);
+
+            if (p->page_table[page] == -1) {
+                int did_evict = 0;
+
+                if (load_missing_page(p, page, &did_evict) != 0) {
+                    printf("Error: could not load missing page\n");
+                    release_script_pages(p);
+                    p = NULL;
+                    break;
+                }
+
+                if (!did_evict) {
+                    printf("Page fault!\n");
+                }
+
+                rq_enqueue(p);
+                break;
+            }
+
+            int frame = p->page_table[page];
+            update_frame_time(frame);
+
             int absIdx = pcb_next_abs_index(p);
             char *line = code_mem_get_line(absIdx);
-            if (!line) { // safety
+            if (!line) {
                 p->pc++;
                 continue;
             }
+
             char temp[MAX_USER_INPUT];
             strncpy(temp, line, MAX_USER_INPUT - 1);
             temp[MAX_USER_INPUT - 1] = '\0';
             parseInput(temp);
             p->pc++;
         }
-        // Clean up
-        release_script_pages(p);
+
+        if (p && pcb_is_done(p)) {
+            release_script_pages(p);
+        }
     }
+    cleanup_all_scripts();
     scheduler_active = 0;
 }
 
@@ -78,17 +107,24 @@ void scheduler_run_rr(void){
             int page = pcb_get_page(p);
 
             if (p->page_table[page] == -1) {
-                printf("Page fault!\n");
+                int did_evict = 0;
 
-                if (load_missing_page(p, page) != 0) {
+                if (load_missing_page(p, page, &did_evict) != 0) {
                     printf("Error: could not load missing page\n");
                     release_script_pages(p);
                     break;
                 }
 
+                if (!did_evict) {
+                    printf("Page fault!\n");
+                }
+
                 rq_enqueue(p);
                 break;
             }
+
+            int frame = p->page_table[page];
+            update_frame_time(frame);
 
             int absIdx = pcb_next_abs_index(p);
             char *line = code_mem_get_line(absIdx);
@@ -109,6 +145,7 @@ void scheduler_run_rr(void){
             rq_enqueue(p);
         }
     }
+    cleanup_all_scripts();
     scheduler_active = 0;
 }
 

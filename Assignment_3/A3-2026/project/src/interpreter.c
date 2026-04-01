@@ -43,16 +43,19 @@ int my_cd(char *dirname);
 int run(char **args);
 int exec(char *args[], int args_size);
 
-static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page);
+static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page, int *did_evict);
+static int find_lru_frame(void);
 
 typedef struct frameInfo{
     ScriptEntry *owner;
     int page_number;
     int valid;
+    int last_used;
 } frameInfo;
 
 static ScriptEntry *script_list = NULL;
 static frameInfo frame_info[FRAME_COUNT];
+static int lru_clock = 0; // Global clock for LRU tracking
 
 // Helper function to find a script entry by filename
 static ScriptEntry *find_script(const char *filename) {
@@ -90,6 +93,7 @@ static void free_loaded_pages(PCB *p) {
             frame_info[frame].page_number = -1;
             frame_info[frame].valid = 0;
             p->page_table[i] = -1;
+            frame_info[frame].last_used = -1;
         }
     }
 }
@@ -98,7 +102,7 @@ static int load_script_pages(FILE *fp, PCB *p) {
     int initial_pages = (p->pages_max < 2) ? p->pages_max : 2;
 
     for (int page = 0; page < initial_pages; page++) {
-        if (load_page_with_eviction(fp, p->script, page) < 0) {
+        if (load_page_with_eviction(fp, p->script, page,NULL) < 0) {
             return -1;
         }
     }
@@ -106,25 +110,32 @@ static int load_script_pages(FILE *fp, PCB *p) {
     return 0;
 }
 
-static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page) {
+static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page, int *did_evict) {
     int frame = code_mem_load_page(fp);
     if (frame >= 0) {
+        if (did_evict) *did_evict = 0;
         entry->page_table[page] = frame;
         frame_info[frame].owner = entry;
         frame_info[frame].page_number = page;
         frame_info[frame].valid = 1;
+        frame_info[frame].last_used = lru_clock++;
         return frame;
     }
 
-    int victim = rand() % FRAME_COUNT;
+    int victim = find_lru_frame();
+    if (victim == -1) {
+        return -1; // No frame available and no victim found (should not happen if FRAME_COUNT > 0)
+    }
+    
+    if (did_evict) *did_evict = 1;
 
-    printf("Victim page contents:\n");
+    printf("Page fault! Victim page contents:\n\n");
     int base = victim * FRAME_SIZE;
     for (int i = 0; i < FRAME_SIZE; i++) {
         char *line = code_mem_get_line(base + i);
         if (line) printf("%s", line);
     }
-    printf("End of victim page contents.\n");
+    printf("\nEnd of victim page contents.\n");
 
     ScriptEntry *victim_owner = frame_info[victim].owner;
     int victim_page = frame_info[victim].page_number;
@@ -138,6 +149,7 @@ static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page) {
     frame_info[victim].owner = NULL;
     frame_info[victim].page_number = -1;
     frame_info[victim].valid = 0;
+    frame_info[victim].last_used = -1;
 
     frame = code_mem_load_page_into_frame(fp, victim);
     if (frame < 0) return -1;
@@ -146,6 +158,7 @@ static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page) {
     frame_info[frame].owner = entry;
     frame_info[frame].page_number = page;
     frame_info[frame].valid = 1;
+    frame_info[frame].last_used = lru_clock++;
     return frame;
 }
 
@@ -238,12 +251,24 @@ void release_script_pages(PCB *p) {
         pcb_free(p);
         return;
     }
-
-    cur->ref_count--;
     
+    cur->ref_count--;
     /*
     if (cur->ref_count == 0) {
-
+        // free any frames still owned by this script
+        for (int i = 0; i < cur->pages_max; i++) {
+            if (cur->page_table[i] != -1) {
+                int frame = cur->page_table[i];
+                code_mem_free_frame(frame);
+                frame_info[frame].owner = NULL;
+                frame_info[frame].page_number = -1;
+                frame_info[frame].valid = 0;
+                frame_info[frame].last_used = -1;
+                cur->page_table[i] = -1;
+            }
+        }
+        
+        // remove from script_list
         ScriptEntry *prev = NULL;
         ScriptEntry *walk = script_list;
         while (walk && walk != cur) {
@@ -261,12 +286,40 @@ void release_script_pages(PCB *p) {
         free(cur);
     }
     */
-
+    
     pcb_free(p);
 }
 
+void cleanup_all_scripts(void) {
+    ScriptEntry *cur = script_list;
+
+    while (cur) {
+        ScriptEntry *next = cur->next;
+
+        for (int i = 0; i < cur->pages_max; i++) {
+            if (cur->page_table[i] != -1) {
+                int frame = cur->page_table[i];
+                code_mem_free_frame(frame);
+                frame_info[frame].owner = NULL;
+                frame_info[frame].page_number = -1;
+                frame_info[frame].valid = 0;
+                frame_info[frame].last_used = -1;
+                cur->page_table[i] = -1;
+            }
+        }
+
+        free(cur->page_table);
+        free(cur->name);
+        free(cur);
+
+        cur = next;
+    }
+
+    script_list = NULL;
+}
+
 // Helper function to load a missing page for a PCB (used during page fault handling)
-int load_missing_page(PCB *p, int page) {
+int load_missing_page(PCB *p, int page, int *did_evict) {
     ScriptEntry *entry = p->script;
     if (!entry) return -1;
 
@@ -282,7 +335,7 @@ int load_missing_page(PCB *p, int page) {
         }
     }
 
-    int frame = load_page_with_eviction(fp, entry, page);
+    int frame = load_page_with_eviction(fp, entry, page, did_evict);
     fclose(fp);
     return (frame < 0) ? -1 : 0;
 }
@@ -291,9 +344,31 @@ void init_frame_info() {
         frame_info[i].owner = NULL;
         frame_info[i].page_number = -1;
         frame_info[i].valid = 0;
+        frame_info[i].last_used = -1;
     }
 }
 
+// Update the last used time for a frame (called on each access)
+void update_frame_time(int frame) {
+    if (frame < 0 || frame >= FRAME_COUNT) return;
+    frame_info[frame].last_used = lru_clock++;
+}
+
+static int find_lru_frame(void) {
+    int victim = -1;
+    int oldest_time = 0;
+
+    for (int i = 0; i < FRAME_COUNT; i++) {
+        if (frame_info[i].valid) {
+            if (victim == -1 || frame_info[i].last_used < oldest_time) {
+                victim = i;
+                oldest_time = frame_info[i].last_used;
+            }
+        }
+    }
+
+    return victim;
+}
 
 // Interpret commands and their arguments
 int interpreter(char *command_args[], int args_size) {
