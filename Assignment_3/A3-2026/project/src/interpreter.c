@@ -46,6 +46,7 @@ int exec(char *args[], int args_size);
 static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page, int *did_evict);
 static int find_lru_frame(void);
 
+// Data structure to represent a loaded script and its associated info
 typedef struct frameInfo{
     ScriptEntry *owner;
     int page_number;
@@ -69,7 +70,7 @@ static ScriptEntry *find_script(const char *filename) {
     return NULL;
 }
 
-
+// Helper function to count lines in a script file (used to determine length and pages needed)
 static int count_script_lines(FILE *fp) {
     char buf[MAX_CODE_LINE + 5];
     int count = 0;
@@ -82,6 +83,7 @@ static int count_script_lines(FILE *fp) {
     return count;
 }
 
+// Free all pages associated with a PCB 
 static void free_loaded_pages(PCB *p) {
     if (!p) return;
 
@@ -98,10 +100,13 @@ static void free_loaded_pages(PCB *p) {
     }
 }
 
+// Load the initial pages of a script into memory (called when first loading a script)
 static int load_script_pages(FILE *fp, PCB *p) {
+    // Load the first pages, maximum of 2 pages
     int initial_pages = (p->pages_max < 2) ? p->pages_max : 2;
 
     for (int page = 0; page < initial_pages; page++) {
+        // Attempt to load page, evicting if necessary
         if (load_page_with_eviction(fp, p->script, page,NULL) < 0) {
             return -1;
         }
@@ -110,10 +115,14 @@ static int load_script_pages(FILE *fp, PCB *p) {
     return 0;
 }
 
+// Load a page while evicting if no frames available
 static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page, int *did_evict) {
     int frame = code_mem_load_page(fp);
+    // If we got a frame, just use it
     if (frame >= 0) {
+        // Mark that no eviction occurred
         if (did_evict) *did_evict = 0;
+        // Update page table and frame info
         entry->page_table[page] = frame;
         frame_info[frame].owner = entry;
         frame_info[frame].page_number = page;
@@ -122,35 +131,41 @@ static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page, int *
         return frame;
     }
 
+    // No free frame, use LRU to find a victim
     int victim = find_lru_frame();
     if (victim == -1) {
-        return -1; // No frame available and no victim found (should not happen if FRAME_COUNT > 0)
+        return -1; // No frame available and no victim found 
     }
     
+    // Mark that eviction occurred
     if (did_evict) *did_evict = 1;
 
     printf("Page fault! Victim page contents:\n\n");
-    int base = victim * FRAME_SIZE;
+    int base = victim * FRAME_SIZE; // Calculate the base line number of the victim page
     for (int i = 0; i < FRAME_SIZE; i++) {
-        char *line = code_mem_get_line(base + i);
-        if (line) printf("%s", line);
+        char *line = code_mem_get_line(base + i); // Get the line from code memory
+        if (line) printf("%s", line); // Print the line if it exists
     }
     printf("\nEnd of victim page contents.\n");
 
-    ScriptEntry *victim_owner = frame_info[victim].owner;
-    int victim_page = frame_info[victim].page_number;
+    // Evict the victim page
+    ScriptEntry *victim_owner = frame_info[victim].owner; // Get the owner of the victim page
+    int victim_page = frame_info[victim].page_number; // Get the page number of the victim page in its owner's page table
 
+    // Invalidate the victim page in its owner's page table
     if (victim_owner && victim_page != -1) {
         victim_owner->page_table[victim_page] = -1;
     }
-
-    code_mem_free_frame(victim);
+    
+    // Free the victim frame
+    code_mem_free_frame(victim); 
 
     frame_info[victim].owner = NULL;
     frame_info[victim].page_number = -1;
     frame_info[victim].valid = 0;
     frame_info[victim].last_used = -1;
 
+    // Load the new page into the now free victim frame
     frame = code_mem_load_page_into_frame(fp, victim);
     if (frame < 0) return -1;
 
@@ -162,14 +177,15 @@ static int load_page_with_eviction(FILE *fp, ScriptEntry *entry, int page, int *
     return frame;
 }
 
+// Load a script as a process, creating a PCB and loading initial pages
 static PCB *load_script_as_process(const char *filename) {
     ScriptEntry *entry = find_script(filename);
 
     if(entry != NULL) {
-        entry->ref_count++;
+        entry->ref_count++; // Increment reference count for shared script entry
         PCB *p = pcb_create(entry->length, entry->pages_max);
         if (!p) {
-            entry->ref_count--;
+            entry->ref_count--; // Decrement ref count if PCB creation fails
             return NULL;
         }
         p->script = entry;
@@ -182,7 +198,7 @@ static PCB *load_script_as_process(const char *filename) {
     if (!fp) return NULL;
 
     int length = count_script_lines(fp);
-    int pages_max = (length + FRAME_SIZE - 1) / FRAME_SIZE;
+    int pages_max = (length + FRAME_SIZE - 1) / FRAME_SIZE; // Calculate pages needed, rounding up
 
     PCB *p = pcb_create(length, pages_max);
     if (!p) {
@@ -198,6 +214,7 @@ static PCB *load_script_as_process(const char *filename) {
         return NULL;
     }
 
+    // Name the entry
     entry->name = strdup(filename);
     if(!entry->name) {
         free(entry);
@@ -206,6 +223,7 @@ static PCB *load_script_as_process(const char *filename) {
         return NULL;
     }
 
+    // Initialize the rest of the entry
     entry->length = length;
     entry->pages_max = pages_max;
     entry->page_table = malloc(pages_max * sizeof(int));
@@ -220,9 +238,11 @@ static PCB *load_script_as_process(const char *filename) {
     for (int i = 0; i < pages_max; i++) {
         entry->page_table[i] = -1; // Initialize page table entries to -1 (indicating not allocated)
     }
+    
     p->script = entry;
     p->page_table = entry->page_table;
 
+    // Load initial pages of the script into memory
     if (load_script_pages(fp, p) != 0) {
         free(entry->page_table);
         free(entry->name);
@@ -232,7 +252,7 @@ static PCB *load_script_as_process(const char *filename) {
         return NULL;    
     }
 
-
+    // Add the new entry to the global script list
     entry->ref_count = 1;
     entry->next = script_list;
     script_list = entry;
@@ -242,7 +262,7 @@ static PCB *load_script_as_process(const char *filename) {
     return p;
 }
 
-// Helper function to release pages of a PCB and clean up script entry if needed
+// Helper function to release pages of a PCB
 void release_script_pages(PCB *p) {
     if (!p) return;
 
@@ -253,43 +273,11 @@ void release_script_pages(PCB *p) {
     }
     
     cur->ref_count--;
-    /*
-    if (cur->ref_count == 0) {
-        // free any frames still owned by this script
-        for (int i = 0; i < cur->pages_max; i++) {
-            if (cur->page_table[i] != -1) {
-                int frame = cur->page_table[i];
-                code_mem_free_frame(frame);
-                frame_info[frame].owner = NULL;
-                frame_info[frame].page_number = -1;
-                frame_info[frame].valid = 0;
-                frame_info[frame].last_used = -1;
-                cur->page_table[i] = -1;
-            }
-        }
-        
-        // remove from script_list
-        ScriptEntry *prev = NULL;
-        ScriptEntry *walk = script_list;
-        while (walk && walk != cur) {
-            prev = walk;
-            walk = walk->next;
-        }
-
-        if (walk) {
-            if (prev == NULL) script_list = walk->next;
-            else prev->next = walk->next;
-        }
-
-        free(cur->page_table);
-        free(cur->name);
-        free(cur);
-    }
-    */
     
     pcb_free(p);
 }
 
+// Cleanup function to free all loaded scripts and their associated frames (called on shutdown)
 void cleanup_all_scripts(void) {
     ScriptEntry *cur = script_list;
 
@@ -320,12 +308,14 @@ void cleanup_all_scripts(void) {
 
 // Helper function to load a missing page for a PCB (used during page fault handling)
 int load_missing_page(PCB *p, int page, int *did_evict) {
+    // Find the script entry for this PCB
     ScriptEntry *entry = p->script;
     if (!entry) return -1;
 
     FILE *fp = fopen(entry->name, "r");
     if (!fp) return -1;
 
+    // Seek to the correct position in the file for the page we want to load
     char buf[MAX_CODE_LINE + 5];
     int lines_to_skip = page * FRAME_SIZE;
     for (int i = 0; i < lines_to_skip; i++) {
@@ -335,6 +325,7 @@ int load_missing_page(PCB *p, int page, int *did_evict) {
         }
     }
 
+    // Load the page with eviction if necessary
     int frame = load_page_with_eviction(fp, entry, page, did_evict);
     fclose(fp);
     return (frame < 0) ? -1 : 0;
@@ -358,6 +349,7 @@ static int find_lru_frame(void) {
     int victim = -1;
     int oldest_time = 0;
 
+    // Find the valid frame with the oldest last used time
     for (int i = 0; i < FRAME_COUNT; i++) {
         if (frame_info[i].valid) {
             if (victim == -1 || frame_info[i].last_used < oldest_time) {

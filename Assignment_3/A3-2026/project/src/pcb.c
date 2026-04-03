@@ -36,6 +36,7 @@ int pcb_get_offset(PCB *p) {
     return p->pc % 3;
 }
 
+// Get the absolute index in code memory for the current instruction of a PCB, or -1 if page not loaded
 int pcb_next_abs_index(PCB *p) {
     int page = pcb_get_page(p);
     int offset = pcb_get_offset(p);

@@ -27,14 +27,14 @@ void scheduler_run_fcfs(void) {
     scheduler_active = 1;
     while (!rq_is_empty()) {
         PCB *p = rq_dequeue();
-
         while (!pcb_is_done(p)) {
-            int page = pcb_get_page(p);
+            int page = pcb_get_page(p); // Get the page number for the current instruction
 
+            // If the page is not in memory, we have a page fault and need to load it
             if (p->page_table[page] == -1) {
-                int did_evict = 0;
+                int did_evict = 0; // Flag to indicate if eviction occurred
 
-                if (load_missing_page(p, page, &did_evict) != 0) {
+                if (load_missing_page(p, page, &did_evict) != 0) { // Attempt to load the missing page
                     printf("Error: could not load missing page\n");
                     release_script_pages(p);
                     p = NULL;
@@ -49,9 +49,10 @@ void scheduler_run_fcfs(void) {
                 break;
             }
 
-            int frame = p->page_table[page];
-            update_frame_time(frame);
+            int frame = p->page_table[page]; // Get the frame number from the page table
+            update_frame_time(frame); // Update the last used time for LRU
 
+            // Calculate the absolute instruction index and fetch the line from code memory
             int absIdx = pcb_next_abs_index(p);
             char *line = code_mem_get_line(absIdx);
             if (!line) {
